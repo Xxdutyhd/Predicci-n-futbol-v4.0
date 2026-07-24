@@ -10,10 +10,10 @@ import plotly.graph_objects as go
 # ============================================================
 # CONFIGURACIÓN DE LA PÁGINA (UI)
 # ============================================================
-st.set_page_config(page_title="AI Predictor V4.1", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="AI Predictor V4.2", page_icon="⚽", layout="wide")
 
-st.title("⚽ AI Match Predictor V4.1 - Motor Autónomo")
-st.markdown("Análisis estadístico adaptativo por equipo y fecha.")
+st.title("⚽ AI Match Predictor V4.2 - Motor Autónomo")
+st.markdown("Análisis estadístico adaptativo con Doble Oportunidad y Tarjetas.")
 
 # ============================================================
 # 1. MÓDULO DE EXTRACCIÓN DE DATOS (API / DINÁMICO)
@@ -28,7 +28,6 @@ class APIFootballFetcher:
         self.base_url = "https://api-football-v1.p.rapidapi.com/v3"
 
     def get_team_id(self, team_name):
-        """Busca el ID del equipo si hay API Key activa."""
         if not self.api_key: return None
         url = f"{self.base_url}/teams"
         try:
@@ -38,22 +37,20 @@ class APIFootballFetcher:
             return None
 
     def _generate_dynamic_stats(self, home_team, away_team):
-        """
-        Genera estadísticas dinámicas y únicas basadas en los nombres 
-        de los equipos cuando no hay API Key ingresada.
-        """
-        # Crear un valor numérico único usando el nombre de los equipos
         seed_string = f"{home_team.lower().strip()}_vs_{away_team.lower().strip()}"
         hash_val = int(hashlib.md5(seed_string.encode()).hexdigest(), 16)
         
-        # Calcular variaciones únicas para cada métrica
-        h2h_home = 0.8 + ((hash_val % 25) / 10.0)        # Rango: 0.8 a 3.2 goles
-        h2h_away = 0.5 + (((hash_val >> 2) % 20) / 10.0) # Rango: 0.5 a 2.5 goles
-        rec_home = 0.9 + (((hash_val >> 4) % 22) / 10.0) # Rango: 0.9 a 3.1 goles
-        rec_away = 0.6 + (((hash_val >> 6) % 18) / 10.0) # Rango: 0.6 a 2.4 goles
+        h2h_home = 0.8 + ((hash_val % 25) / 10.0)        
+        h2h_away = 0.5 + (((hash_val >> 2) % 20) / 10.0) 
+        rec_home = 0.9 + (((hash_val >> 4) % 22) / 10.0) 
+        rec_away = 0.6 + (((hash_val >> 6) % 18) / 10.0) 
         
-        corn_home = 3.5 + (((hash_val >> 8) % 35) / 10.0) # Rango: 3.5 a 7.0 córners
-        corn_away = 3.0 + (((hash_val >> 10) % 30) / 10.0)# Rango: 3.0 a 6.0 córners
+        corn_home = 3.5 + (((hash_val >> 8) % 35) / 10.0) 
+        corn_away = 3.0 + (((hash_val >> 10) % 30) / 10.0)
+        
+        # NUEVO: Generador dinámico de tarjetas
+        cards_home = 1.5 + (((hash_val >> 12) % 25) / 10.0) 
+        cards_away = 1.5 + (((hash_val >> 14) % 25) / 10.0)
 
         return {
             "h2h_home_goals_avg": round(h2h_home, 2),
@@ -61,17 +58,17 @@ class APIFootballFetcher:
             "recent_home_goals_avg": round(rec_home, 2),
             "recent_away_goals_avg": round(rec_away, 2),
             "expected_corners_home": round(corn_home, 1),
-            "expected_corners_away": round(corn_away, 1)
+            "expected_corners_away": round(corn_away, 1),
+            "expected_cards_home": round(cards_home, 1),
+            "expected_cards_away": round(cards_away, 1)
         }
 
     def fetch_h2h_and_stats(self, home_team, away_team, home_id=None, away_id=None):
-        # Si hay API Key y IDs válidos, consultar API real
         if self.api_key and home_id and away_id:
             try:
                 url = f"{self.base_url}/fixtures/headtohead"
                 res = requests.get(url, headers=self.headers, params={"h2h": f"{home_id}-{away_id}", "last": "5"}).json()
                 if res.get('response'):
-                    # Procesar partidos reales
                     fixtures = res['response']
                     h_goals, a_goals = 0, 0
                     for f in fixtures:
@@ -84,38 +81,45 @@ class APIFootballFetcher:
                         "recent_home_goals_avg": round(h_goals / count, 2),
                         "recent_away_goals_avg": round(a_goals / count, 2),
                         "expected_corners_home": 5.2,
-                        "expected_corners_away": 4.3
+                        "expected_corners_away": 4.3,
+                        "expected_cards_home": 2.2, # Valor por defecto API
+                        "expected_cards_away": 2.4  # Valor por defecto API
                     }
             except:
                 pass
                 
-        # Si no hay API Key o falla la conexión, usar el generador dinámico por equipo
         return self._generate_dynamic_stats(home_team, away_team)
 
 # ============================================================
-# 2. MOTOR DE ANÁLISIS (POISSON + H2H PRIORITARIO + CÓRNERS)
+# 2. MOTOR DE ANÁLISIS (POISSON + H2H + CÓRNERS + TARJETAS)
 # ============================================================
 class PredictorEngine:
     def __init__(self, stats):
         self.stats = stats
-        self.weight_h2h = 0.70      # 70% peso al enfrentamiento directo (H2H)
-        self.weight_recent = 0.30   # 30% peso al estado de forma reciente
+        self.weight_h2h = 0.70      
+        self.weight_recent = 0.30   
         
     def calculate_lambdas(self):
         lambda_home = (self.stats["h2h_home_goals_avg"] * self.weight_h2h) + (self.stats["recent_home_goals_avg"] * self.weight_recent)
         lambda_away = (self.stats["h2h_away_goals_avg"] * self.weight_h2h) + (self.stats["recent_away_goals_avg"] * self.weight_recent)
         
-        lambda_home *= 1.08  # Ajuste por ventaja de localía
+        lambda_home *= 1.08  
         return max(0.2, lambda_home), max(0.2, lambda_away)
 
     def calculate_corners(self):
-        """Calcula una LÍNEA ÚNICA DIRECTA dentro del rango seguro (7.5 a 11.5)."""
         total_corners = self.stats["expected_corners_home"] + self.stats["expected_corners_away"]
-        
         if total_corners >= 9.5:
             return "Over 8.5 Córners", total_corners
         else:
             return "Under 10.5 Córners", total_corners
+
+    def calculate_cards(self):
+        """NUEVO: Calcula una LÍNEA ÚNICA DIRECTA de tarjetas (Línea estándar 4.5/5.5)"""
+        total_cards = self.stats["expected_cards_home"] + self.stats["expected_cards_away"]
+        if total_cards >= 4.8:
+            return "Over 4.5 Tarjetas", total_cards
+        else:
+            return "Under 5.5 Tarjetas", total_cards
 
     def predict(self):
         l_home, l_away = self.calculate_lambdas()
@@ -134,12 +138,19 @@ class PredictorEngine:
                     
         scorelines.sort(key=lambda x: x[1], reverse=True)
         corner_pick, corner_val = self.calculate_corners()
+        card_pick, card_val = self.calculate_cards()
+        
+        # NUEVO: Cálculos de Doble Oportunidad
+        dc_1x = p_home + p_draw
+        dc_x2 = p_away + p_draw
+        dc_12 = p_home + p_away
         
         return {
-            "lambda_home": l_home, "lambda_away": l_away,
             "p_home": p_home, "p_draw": p_draw, "p_away": p_away,
+            "dc_1x": dc_1x, "dc_x2": dc_x2, "dc_12": dc_12,
             "p_over25": p_over25, "p_btts": p_btts, "scores": scorelines[:3],
             "corner_pick": corner_pick, "expected_corners": corner_val,
+            "card_pick": card_pick, "expected_cards": card_val,
             "weight_h2h": self.weight_h2h * 100, "weight_recent": self.weight_recent * 100
         }
 
@@ -148,7 +159,7 @@ class PredictorEngine:
 # ============================================================
 with st.sidebar:
     st.header("⚙️ Configuración API")
-    api_key_input = st.text_input("API-Football Key (Opcional)", type="password", help="Pega tu API Key de RapidAPI para datos en vivo 100% reales.")
+    api_key_input = st.text_input("API-Football Key (Opcional)", type="password", help="Pega tu API Key de RapidAPI para datos en vivo.")
     if not api_key_input:
         st.info("💡 Sin API Key: La app utiliza el motor dinámico por equipos.")
     else:
@@ -176,57 +187,50 @@ if predict_btn and home_team and away_team:
         results = engine.predict()
         
         st.success(f"✅ Análisis completado para {home_team} vs {away_team}")
-        
-        # Muestra de métricas base procesadas
-        with st.expander("📋 Ver datos base extraídos para este cruce"):
-            st.write(f"• Promedio Goles H2H {home_team}: {stats['h2h_home_goals_avg']}")
-            st.write(f"• Promedio Goles H2H {away_team}: {stats['h2h_away_goals_avg']}")
-            st.write(f"• Córners proyectados: {stats['expected_corners_home'] + stats['expected_corners_away']:.1f}")
 
-        # Gráficos
-        chart_col1, chart_col2 = st.columns(2)
-        
-        with chart_col1:
-            st.markdown("##### Peso Algorítmico (Prioridad H2H)")
-            fig_donut = go.Figure(data=[go.Pie(
-                labels=['Historial Directo (H2H)', 'Forma Reciente'],
-                values=[results['weight_h2h'], results['weight_recent']],
-                hole=.5, marker_colors=['#00CC96', '#636EFA']
-            )])
-            fig_donut.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=230)
-            st.plotly_chart(fig_donut, use_container_width=True)
-            
-        with chart_col2:
-            st.markdown("##### Probabilidades de Resultado (1X2)")
-            df_probs = pd.DataFrame({
-                'Resultado': [f'Gana {home_team}', 'Empate', f'Gana {away_team}'],
-                'Probabilidad (%)': [results['p_home']*100, results['p_draw']*100, results['p_away']*100]
-            })
-            fig_bar = px.bar(
-                df_probs, x='Resultado', y='Probabilidad (%)', text='Probabilidad (%)',
-                color='Resultado', color_discrete_sequence=['#2EF0A0', '#FFC107', '#FF5252']
-            )
-            fig_bar.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-            fig_bar.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=230, showlegend=False)
-            st.plotly_chart(fig_bar, use_container_width=True)
+        # Gráficos de Probabilidad 1X2
+        st.markdown("##### Probabilidades de Resultado (1X2)")
+        df_probs = pd.DataFrame({
+            'Resultado': [f'Gana {home_team}', 'Empate', f'Gana {away_team}'],
+            'Probabilidad (%)': [results['p_home']*100, results['p_draw']*100, results['p_away']*100]
+        })
+        fig_bar = px.bar(
+            df_probs, x='Resultado', y='Probabilidad (%)', text='Probabilidad (%)',
+            color='Resultado', color_discrete_sequence=['#2EF0A0', '#FFC107', '#FF5252']
+        )
+        fig_bar.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+        fig_bar.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=250, showlegend=False)
+        st.plotly_chart(fig_bar, use_container_width=True)
 
         st.markdown("---")
         
-        col_goles, col_corners = st.columns(2)
+        # NUEVA DISTRIBUCIÓN DE COLUMNAS (4 Columnas para acomodar todo)
+        col_dc, col_goles, col_corners, col_cards = st.columns(4)
         
+        with col_dc:
+            st.subheader("🛡️ Doble Oport.")
+            st.write(f"**1X (Local o Empate):** {results['dc_1x']*100:.1f}%")
+            st.write(f"**X2 (Visita o Empate):** {results['dc_x2']*100:.1f}%")
+            st.write(f"**12 (Cualquiera):** {results['dc_12']*100:.1f}%")
+
         with col_goles:
-            st.subheader("🥅 Mercado de Goles")
-            st.write(f"**Over 2.5 Goles:** {results['p_over25']*100:.1f}%")
-            st.write(f"**Ambos Anotan (BTTS):** {results['p_btts']*100:.1f}%")
-            st.write("**Marcadores Exactos más probables:**")
+            st.subheader("🥅 Goles")
+            st.write(f"**Over 2.5:** {results['p_over25']*100:.1f}%")
+            st.write(f"**Ambos Anotan:** {results['p_btts']*100:.1f}%")
+            st.write("**Marcadores Probables:**")
             for score, prob in results['scores']:
-                st.write(f"👉 **{score}** -> {prob*100:.1f}%")
+                st.write(f"👉 **{score}** ({prob*100:.1f}%)")
                 
         with col_corners:
-            st.subheader("🚩 Mercado de Córners (Línea Única)")
-            st.info(f"📌 **Selección Directa:** {results['corner_pick']}")
-            st.caption(f"Córners totales proyectados: {results['expected_corners']:.1f}")
+            st.subheader("🚩 Córners")
+            st.info(f"**{results['corner_pick']}**")
+            st.caption(f"Proyectados: {results['expected_corners']:.1f}")
+
+        with col_cards:
+            st.subheader("🟨 Tarjetas")
+            st.warning(f"**{results['card_pick']}**")
+            st.caption(f"Proyectadas: {results['expected_cards']:.1f}")
 
 elif predict_btn:
     st.warning("⚠️ Ingresa los nombres de ambos equipos.")
-            
+    
