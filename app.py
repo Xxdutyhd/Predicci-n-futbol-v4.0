@@ -10,10 +10,10 @@ import plotly.graph_objects as go
 # ============================================================
 # CONFIGURACIÓN DE LA PÁGINA (UI)
 # ============================================================
-st.set_page_config(page_title="AI Predictor V4.2", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="AI Predictor V4.3", page_icon="⚽", layout="wide")
 
-st.title("⚽ AI Match Predictor V4.2 - Motor Autónomo")
-st.markdown("Análisis estadístico adaptativo con Doble Oportunidad y Tarjetas.")
+st.title("⚽ AI Match Predictor V4.3 - Precisión Profesional")
+st.markdown("Análisis estadístico con Doble Oportunidad, extración de API real y gestión estricta de riesgo.")
 
 # ============================================================
 # 1. MÓDULO DE EXTRACCIÓN DE DATOS (API / DINÁMICO)
@@ -48,7 +48,6 @@ class APIFootballFetcher:
         corn_home = 3.5 + (((hash_val >> 8) % 35) / 10.0) 
         corn_away = 3.0 + (((hash_val >> 10) % 30) / 10.0)
         
-        # NUEVO: Generador dinámico de tarjetas
         cards_home = 1.5 + (((hash_val >> 12) % 25) / 10.0) 
         cards_away = 1.5 + (((hash_val >> 14) % 25) / 10.0)
 
@@ -63,6 +62,26 @@ class APIFootballFetcher:
             "expected_cards_away": round(cards_away, 1)
         }
 
+    def get_real_fixture_statistics(self, fixture_id, default_h_corn, default_a_corn):
+        """Consulta el endpoint de estadísticas reales para un partido específico."""
+        try:
+            url = f"{self.base_url}/fixtures/statistics"
+            res = requests.get(url, headers=self.headers, params={"fixture": fixture_id}).json()
+            if res.get('response') and len(res['response']) == 2:
+                stats_home = {s['type']: s['value'] for s in res['response'][0]['statistics']}
+                stats_away = {s['type']: s['value'] for s in res['response'][1]['statistics']}
+                
+                h_corn = float(stats_home.get('Corner Kicks', default_h_corn) or default_h_corn)
+                a_corn = float(stats_away.get('Corner Kicks', default_a_corn) or default_a_corn)
+                
+                h_cards = float(stats_home.get('Yellow Cards', 2.0) or 2.0) + float(stats_home.get('Red Cards', 0) or 0)
+                a_cards = float(stats_away.get('Yellow Cards', 2.0) or 2.0) + float(stats_away.get('Red Cards', 0) or 0)
+                
+                return h_corn, a_corn, h_cards, a_cards
+        except:
+            pass
+        return None
+
     def fetch_h2h_and_stats(self, home_team, away_team, home_id=None, away_id=None):
         if self.api_key and home_id and away_id:
             try:
@@ -71,19 +90,33 @@ class APIFootballFetcher:
                 if res.get('response'):
                     fixtures = res['response']
                     h_goals, a_goals = 0, 0
+                    
                     for f in fixtures:
                         h_goals += f['goals']['home'] or 0
                         a_goals += f['goals']['away'] or 0
+                    
                     count = len(fixtures) or 1
+                    
+                    # Extraer estadísticas reales del último enfrentamiento
+                    last_fixture_id = fixtures[0]['fixture']['id']
+                    real_stats = self.get_real_fixture_statistics(last_fixture_id, 4.5, 4.5)
+                    
+                    if real_stats:
+                        h_corn, a_corn, h_cards, a_cards = real_stats
+                    else:
+                        # Fallback dinámico si la liga no tiene datos de córners
+                        h_corn, a_corn = 5.2, 4.3
+                        h_cards, a_cards = 2.2, 2.4
+                        
                     return {
                         "h2h_home_goals_avg": round(h_goals / count, 2),
                         "h2h_away_goals_avg": round(a_goals / count, 2),
                         "recent_home_goals_avg": round(h_goals / count, 2),
                         "recent_away_goals_avg": round(a_goals / count, 2),
-                        "expected_corners_home": 5.2,
-                        "expected_corners_away": 4.3,
-                        "expected_cards_home": 2.2, # Valor por defecto API
-                        "expected_cards_away": 2.4  # Valor por defecto API
+                        "expected_corners_home": round(h_corn, 1),
+                        "expected_corners_away": round(a_corn, 1),
+                        "expected_cards_home": round(h_cards, 1),
+                        "expected_cards_away": round(a_cards, 1)
                     }
             except:
                 pass
@@ -103,18 +136,33 @@ class PredictorEngine:
         lambda_home = (self.stats["h2h_home_goals_avg"] * self.weight_h2h) + (self.stats["recent_home_goals_avg"] * self.weight_recent)
         lambda_away = (self.stats["h2h_away_goals_avg"] * self.weight_h2h) + (self.stats["recent_away_goals_avg"] * self.weight_recent)
         
-        lambda_home *= 1.08  
+        # Ajuste dinámico de ventaja de localía
+        diff = lambda_home - lambda_away
+        if diff < -1.0:
+            home_adv = 1.00  # Visitante muy superior, se anula la localía
+        elif diff < 0:
+            home_adv = 1.04  # Visitante ligeramente superior
+        else:
+            home_adv = 1.08  # Ventaja estándar
+            
+        lambda_home *= home_adv  
         return max(0.2, lambda_home), max(0.2, lambda_away)
 
     def calculate_corners(self):
+        """Calcula una LÍNEA ÚNICA DIRECTA dentro del rango estricto de seguridad."""
         total_corners = self.stats["expected_corners_home"] + self.stats["expected_corners_away"]
-        if total_corners >= 9.5:
+        
+        # Filtros estrictos para mantener el mercado entre >7.5 y <11.5
+        if total_corners >= 10.5:
+            return "Under 11.5 Córners", total_corners
+        elif total_corners <= 8.0:
+            return "Over 7.5 Córners", total_corners
+        elif total_corners > 8.0 and total_corners < 9.5:
             return "Over 8.5 Córners", total_corners
         else:
             return "Under 10.5 Córners", total_corners
 
     def calculate_cards(self):
-        """NUEVO: Calcula una LÍNEA ÚNICA DIRECTA de tarjetas (Línea estándar 4.5/5.5)"""
         total_cards = self.stats["expected_cards_home"] + self.stats["expected_cards_away"]
         if total_cards >= 4.8:
             return "Over 4.5 Tarjetas", total_cards
@@ -140,7 +188,6 @@ class PredictorEngine:
         corner_pick, corner_val = self.calculate_corners()
         card_pick, card_val = self.calculate_cards()
         
-        # NUEVO: Cálculos de Doble Oportunidad
         dc_1x = p_home + p_draw
         dc_x2 = p_away + p_draw
         dc_12 = p_home + p_away
@@ -163,7 +210,7 @@ with st.sidebar:
     if not api_key_input:
         st.info("💡 Sin API Key: La app utiliza el motor dinámico por equipos.")
     else:
-        st.success("🔑 API Key activa")
+        st.success("🔑 API Key activa: Conectado al servidor de estadísticas reales.")
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -173,10 +220,10 @@ with col2:
 with col3:
     match_date = st.date_input("Fecha del Partido", datetime.date.today())
 
-predict_btn = st.button("🚀 Iniciar Análisis Individual", use_container_width=True)
+predict_btn = st.button("🚀 Iniciar Análisis Predictivo", use_container_width=True)
 
 if predict_btn and home_team and away_team:
-    with st.spinner(f"Analizando métricas específicas para {home_team} vs {away_team}..."):
+    with st.spinner(f"Extrayendo métricas y procesando redes estadísticas para {home_team} vs {away_team}..."):
         
         fetcher = APIFootballFetcher(api_key_input)
         h_id = fetcher.get_team_id(home_team)
@@ -188,7 +235,6 @@ if predict_btn and home_team and away_team:
         
         st.success(f"✅ Análisis completado para {home_team} vs {away_team}")
 
-        # Gráficos de Probabilidad 1X2
         st.markdown("##### Probabilidades de Resultado (1X2)")
         df_probs = pd.DataFrame({
             'Resultado': [f'Gana {home_team}', 'Empate', f'Gana {away_team}'],
@@ -204,7 +250,6 @@ if predict_btn and home_team and away_team:
 
         st.markdown("---")
         
-        # NUEVA DISTRIBUCIÓN DE COLUMNAS (4 Columnas para acomodar todo)
         col_dc, col_goles, col_corners, col_cards = st.columns(4)
         
         with col_dc:
@@ -233,4 +278,3 @@ if predict_btn and home_team and away_team:
 
 elif predict_btn:
     st.warning("⚠️ Ingresa los nombres de ambos equipos.")
-    
