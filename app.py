@@ -4,17 +4,16 @@ import requests
 import datetime
 import hashlib
 import numpy as np
-from scipy.stats import poisson, skellam
+from scipy.stats import poisson
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # ============================================================
 # CONFIGURACIÓN DE LA PÁGINA (UI PREMIUM)
 # ============================================================
 st.set_page_config(
-    page_title="AI Match Predictor Pro V6.0",
+    page_title="AI Match Predictor Pro V6.1",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -35,13 +34,6 @@ st.markdown("""
         color: #8892b0;
         font-size: 1.1rem;
         margin-bottom: 2rem;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-        border-radius: 16px;
-        padding: 1.5rem;
-        border: 1px solid #334155;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
     }
     .pick-safe {
         background: linear-gradient(135deg, #065f46 0%, #047857 100%);
@@ -70,41 +62,25 @@ st.markdown("""
         font-weight: 700;
         border: 1px solid #f87171;
     }
-    .confidence-bar {
-        height: 8px;
-        border-radius: 4px;
-        background: #1e293b;
-        overflow: hidden;
-    }
-    .confidence-fill {
-        height: 100%;
-        border-radius: 4px;
-        transition: width 0.5s ease;
-    }
     .value-positive { color: #34d399; font-weight: 700; }
     .value-negative { color: #f87171; font-weight: 700; }
     .value-neutral { color: #94a3b8; font-weight: 700; }
-    div[data-testid="stExpander"] {
-        background: #0f172a;
-        border-radius: 12px;
-        border: 1px solid #1e293b;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">⚽ AI Match Predictor Pro V6.0</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">⚽ AI Match Predictor Pro V6.1</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Motor Dixon-Coles + Monte Carlo | Análisis de Valor | Selección Inteligente de Líneas</div>', unsafe_allow_html=True)
 
 # ============================================================
 # CONSTANTES Y CONFIGURACIÓN
 # ============================================================
 UMBRAL_SEGURO = 0.70
-UMBRAL_VALOR = 0.05  # 5% de edge mínimo para recomendar valor
+UMBRAL_VALOR = 0.05
 SIMULACIONES = 10000
-MAX_GOALS_CALC = 12  # Aumentado para mayor precisión
+MAX_GOALS_CALC = 12
 
 # ============================================================
-# 1. MÓDULO DE EXTRACCIÓN DE DATOS (API / DINÁMICO)
+# 1. MÓDULO DE EXTRACCIÓN DE DATOS
 # ============================================================
 class APIFootballFetcher:
     def __init__(self, api_key=""):
@@ -127,34 +103,18 @@ class APIFootballFetcher:
             return None
 
     def _generate_dynamic_stats(self, home_team, away_team):
-        """
-        Genera estadísticas simuladas pero con variabilidad controlada.
-        A diferencia del hash fijo anterior, esto crea perfiles realistas
-        basados en 'perfiles de equipo' simulados.
-        """
         seed = int(hashlib.md5(f"{home_team}_{away_team}".encode()).hexdigest(), 16)
         np.random.seed(seed % 2**32)
 
-        # Perfil de ataque/defensa basado en "nivel del equipo" simulado
         def team_profile(name):
             name_hash = int(hashlib.md5(name.lower().encode()).hexdigest(), 16)
             np.random.seed(name_hash % 2**32)
-
-            # Nivel del equipo (0-1, donde 1 es elite)
-            level = np.random.beta(2, 2)  # Distribución más realista
-
-            # Ataque: goles esperados por partido
+            level = np.random.beta(2, 2)
             attack = 0.8 + level * 1.8 + np.random.normal(0, 0.15)
-            # Defensa: goles concedidos esperados
             defense = 1.6 - level * 0.9 + np.random.normal(0, 0.15)
-
-            # Córners
             corner_attack = 3.0 + level * 3.0 + np.random.normal(0, 0.3)
             corner_defense = 4.0 - level * 1.5 + np.random.normal(0, 0.3)
-
-            # Tarjetas (equipos defensivos = más tarjetas)
             card_tendency = 1.8 + (1 - level) * 1.2 + np.random.normal(0, 0.2)
-
             return {
                 'attack': max(0.3, attack),
                 'defense': max(0.3, defense),
@@ -166,23 +126,16 @@ class APIFootballFetcher:
 
         home = team_profile(home_team)
         away = team_profile(away_team)
-
-        # Factor de localía realista
         home_advantage = 1.35
 
-        # Goles esperados
         h2h_home = (home['attack'] + away['defense']) / 2 * home_advantage
         h2h_away = (away['attack'] + home['defense']) / 2
-
-        # Forma reciente simulada (con peso decreciente)
         recent_home = h2h_home * (1 + np.random.normal(0, 0.1))
         recent_away = h2h_away * (1 + np.random.normal(0, 0.1))
 
-        # Córners esperados
         exp_corners_home = (home['corner_attack'] + away['corner_defense']) / 2 * 1.1
         exp_corners_away = (away['corner_attack'] + home['corner_defense']) / 2
 
-        # Tarjetas esperadas (más tarjetas en partidos equilibrados y de bajo nivel)
         intensity = 1.0 + abs(home['level'] - away['level']) * 0.3
         exp_cards_home = home['card_tendency'] * intensity
         exp_cards_away = away['card_tendency'] * intensity
@@ -208,12 +161,10 @@ class APIFootballFetcher:
             if res.get('response') and len(res['response']) == 2:
                 stats_home = {s['type']: s['value'] for s in res['response'][0]['statistics']}
                 stats_away = {s['type']: s['value'] for s in res['response'][1]['statistics']}
-
                 h_corn = float(stats_home.get('Corner Kicks', defaults[0]) or defaults[0])
                 a_corn = float(stats_away.get('Corner Kicks', defaults[1]) or defaults[1])
                 h_cards = float(stats_home.get('Yellow Cards', 2.0) or 2.0) + float(stats_home.get('Red Cards', 0) or 0)
                 a_cards = float(stats_away.get('Yellow Cards', 2.0) or 2.0) + float(stats_away.get('Red Cards', 0) or 0)
-
                 return h_corn, a_corn, h_cards, a_cards
         except Exception:
             pass
@@ -228,18 +179,14 @@ class APIFootballFetcher:
                                    params={"h2h": f"{home_id}-{away_id}", "last": "10"}, timeout=10).json()
                 if res.get('response'):
                     fixtures = res['response']
-
-                    # Ponderación exponencial: partidos más recientes valen más
                     h_goals, a_goals, total_weight = 0, 0, 0
                     for idx, f in enumerate(fixtures):
-                        weight = 0.85 ** idx  # Decaimiento exponencial
+                        weight = 0.85 ** idx
                         h_goals += (f['goals']['home'] or 0) * weight
                         a_goals += (f['goals']['away'] or 0) * weight
                         total_weight += weight
 
                     count = len(fixtures)
-
-                    # Estadísticas del último enfrentamiento
                     last_fixture_id = fixtures[0]['fixture']['id']
                     real_stats = _self.get_fixture_statistics(last_fixture_id, (4.5, 4.5))
 
@@ -273,32 +220,23 @@ class APIFootballFetcher:
 # 2. MOTOR DE ANÁLISIS AVANZADO
 # ============================================================
 class PredictorEngine:
-    """
-    Motor híbrido: Dixon-Coles para goles + Monte Carlo para mercados complejos
-    """
     def __init__(self, stats):
         self.stats = stats
         self.weight_h2h = 0.65
         self.weight_recent = 0.35
-        self.rho = -0.05  # Factor de correlación Dixon-Coles (ajuste para empates de bajo scoring)
+        self.rho = -0.05
 
     def calculate_lambdas(self):
-        """Calcula lambdas con ponderación y factor de localía dinámico."""
         lambda_home = (self.stats["h2h_home_goals_avg"] * self.weight_h2h) +                       (self.stats["recent_home_goals_avg"] * self.weight_recent)
         lambda_away = (self.stats["h2h_away_goals_avg"] * self.weight_h2h) +                       (self.stats["recent_away_goals_avg"] * self.weight_recent)
 
-        # Factor de localía basado en diferencia de nivel
         level_diff = self.stats.get("home_level", 0.5) - self.stats.get("away_level", 0.5)
-        home_adv = 1.05 + (level_diff * 0.15)  # 1.05 a 1.20 según nivel
+        home_adv = 1.05 + (level_diff * 0.15)
 
         lambda_home *= home_adv
         return max(0.2, lambda_home), max(0.2, lambda_away)
 
     def dixon_coles_adjustment(self, i, j, lambda_h, lambda_a):
-        """
-        Ajuste de Dixon-Coles para empates de bajo scoring.
-        Corrige la subestimación de empates 0-0 y 1-1 en Poisson básico.
-        """
         if i == 0 and j == 0:
             return 1 - lambda_h * lambda_a * self.rho
         elif i == 0 and j == 1:
@@ -310,28 +248,18 @@ class PredictorEngine:
         return 1.0
 
     def monte_carlo_simulation(self, lambda_h, lambda_a, n_sim=SIMULACIONES):
-        """
-        Simulación Monte Carlo para mercados complejos donde Poisson
-        analítico es difícil de calcular directamente.
-        """
         home_goals = np.random.poisson(lambda_h, n_sim)
         away_goals = np.random.poisson(lambda_a, n_sim)
-
-        total_goals = home_goals + away_goals
-        goal_diff = home_goals - away_goals
-        btts = (home_goals > 0) & (away_goals > 0)
-
         return {
             'home_goals': home_goals,
             'away_goals': away_goals,
-            'total_goals': total_goals,
-            'goal_diff': goal_diff,
-            'btts': btts
+            'total_goals': home_goals + away_goals,
+            'goal_diff': home_goals - away_goals,
+            'btts': (home_goals > 0) & (away_goals > 0)
         }
 
     @staticmethod
     def calculate_ev(prob, odds):
-        """Calcula Expected Value: (prob * odds) - 1"""
         if odds <= 1:
             return -1.0
         return (prob * odds) - 1
@@ -339,30 +267,25 @@ class PredictorEngine:
     @staticmethod
     def pick_safest_line(lambda_val, lineas_over, lineas_under, min_prob=UMBRAL_SEGURO, 
                          tipo="goles", sim_data=None):
-        """
-        Selección inteligente de línea con análisis de valor.
-        """
         candidatos = []
 
         if sim_data is not None and tipo == "goles":
-            # Usar simulación Monte Carlo para mayor precisión
             for linea in lineas_over:
                 n = int(linea)
-                prob = np.mean(sim_data['total_goals'] > n)
+                prob = float(np.mean(sim_data['total_goals'] > n))
                 candidatos.append((f"Over {linea}", prob))
             for linea in lineas_under:
                 n = int(linea)
-                prob = np.mean(sim_data['total_goals'] <= n)
+                prob = float(np.mean(sim_data['total_goals'] <= n))
                 candidatos.append((f"Under {linea}", prob))
         else:
-            # Poisson analítico
             for linea in lineas_over:
                 n = int(linea)
-                prob = 1 - poisson.cdf(n, lambda_val)
+                prob = float(1 - poisson.cdf(n, lambda_val))
                 candidatos.append((f"Over {linea}", prob))
             for linea in lineas_under:
                 n = int(linea)
-                prob = poisson.cdf(n, lambda_val)
+                prob = float(poisson.cdf(n, lambda_val))
                 candidatos.append((f"Under {linea}", prob))
 
         candidatos.sort(key=lambda x: x[1], reverse=True)
@@ -374,7 +297,6 @@ class PredictorEngine:
         l_home, l_away = self.calculate_lambdas()
         l_total = l_home + l_away
 
-        # Simulación Monte Carlo
         mc = self.monte_carlo_simulation(l_home, l_away)
 
         # Probabilidades exactas con Dixon-Coles
@@ -382,8 +304,8 @@ class PredictorEngine:
         scorelines = []
         prob_matrix = np.zeros((MAX_GOALS_CALC, MAX_GOALS_CALC))
 
-        # Constante de normalización para Dixon-Coles
-        tau_sum = 0
+        # Constante de normalización
+        tau_sum = 0.0
         for i in range(MAX_GOALS_CALC):
             for j in range(MAX_GOALS_CALC):
                 tau = self.dixon_coles_adjustment(i, j, l_home, l_away)
@@ -411,19 +333,18 @@ class PredictorEngine:
 
         scorelines.sort(key=lambda x: x[1], reverse=True)
 
-        # Verificar coherencia con Monte Carlo
-        mc_home = np.mean(mc['goal_diff'] > 0)
-        mc_draw = np.mean(mc['goal_diff'] == 0)
-        mc_away = np.mean(mc['goal_diff'] < 0)
-        mc_btts = np.mean(mc['btts'])
+        # Promediar con Monte Carlo
+        mc_home = float(np.mean(mc['goal_diff'] > 0))
+        mc_draw = float(np.mean(mc['goal_diff'] == 0))
+        mc_away = float(np.mean(mc['goal_diff'] < 0))
+        mc_btts = float(np.mean(mc['btts']))
 
-        # Promediar ambos métodos para robustez
         p_home = (p_home + mc_home) / 2
         p_draw = (p_draw + mc_draw) / 2
         p_away = (p_away + mc_away) / 2
         p_btts = (p_btts + mc_btts) / 2
 
-        # ---------- GOLES: línea segura con Monte Carlo ----------
+        # ---------- GOLES ----------
         goal_pick, goal_prob, goal_seguro, goal_todas = self.pick_safest_line(
             l_total,
             lineas_over=[0.5, 1.5, 2.5, 3.5],
@@ -431,7 +352,7 @@ class PredictorEngine:
             sim_data=mc
         )
 
-        # ---------- CÓRNERS: modelo independiente ----------
+        # ---------- CÓRNERS ----------
         l_corners = self.stats["expected_corners_home"] + self.stats["expected_corners_away"]
         corner_pick, corner_prob, corner_seguro, corner_todas = self.pick_safest_line(
             l_corners,
@@ -439,7 +360,7 @@ class PredictorEngine:
             lineas_under=[10.5, 11.5, 12.5, 13.5]
         )
 
-        # ---------- TARJETAS: modelo independiente ----------
+        # ---------- TARJETAS ----------
         l_cards = self.stats["expected_cards_home"] + self.stats["expected_cards_away"]
         card_pick, card_prob, card_seguro, card_todas = self.pick_safest_line(
             l_cards,
@@ -457,30 +378,29 @@ class PredictorEngine:
         dc_pick, dc_prob = dc_opciones[0]
         dc_seguro = dc_prob >= UMBRAL_SEGURO
 
-        # ---------- HANDICAP ASIÁTICO ----------
+        # ---------- HANDICAP ASIÁTICO (CORREGIDO) ----------
         asian_lines = []
         for handicap in [-1.5, -0.5, 0, 0.5, 1.5]:
             if handicap == 0:
                 prob = p_draw
                 label = "Draw No Bet (0)"
             elif handicap < 0:
-                # Local debe ganar por más de |handicap|
-                prob = np.sum(prob_matrix[i, j] for i in range(MAX_GOALS_CALC) 
-                             for j in range(MAX_GOALS_CALC) if i - j > abs(handicap))
+                # FIX: Usar sum() de Python en lugar de np.sum() con generator
+                prob = sum(prob_matrix[i, j] for i in range(MAX_GOALS_CALC) 
+                           for j in range(MAX_GOALS_CALC) if i - j > abs(handicap))
                 label = f"AH Local {handicap}"
             else:
-                # Local puede perder por menos de handicap
-                prob = np.sum(prob_matrix[i, j] for i in range(MAX_GOALS_CALC) 
-                             for j in range(MAX_GOALS_CALC) if i - j > -handicap)
+                prob = sum(prob_matrix[i, j] for i in range(MAX_GOALS_CALC) 
+                           for j in range(MAX_GOALS_CALC) if i - j > -handicap)
                 label = f"AH Local +{handicap}"
-            asian_lines.append((label, prob))
+            asian_lines.append((label, float(prob)))
         asian_lines.sort(key=lambda x: x[1], reverse=True)
 
-        # ---------- MÁS/MENOS GOLES POR EQUIPO ----------
+        # ---------- GOLES POR EQUIPO ----------
         team_goal_lines = []
         for line in [0.5, 1.5, 2.5]:
-            prob_over_home = 1 - poisson.cdf(int(line), l_home)
-            prob_over_away = 1 - poisson.cdf(int(line), l_away)
+            prob_over_home = float(1 - poisson.cdf(int(line), l_home))
+            prob_over_away = float(1 - poisson.cdf(int(line), l_away))
             team_goal_lines.extend([
                 (f"Local Over {line}", prob_over_home),
                 (f"Visitante Over {line}", prob_over_away)
@@ -510,7 +430,7 @@ class PredictorEngine:
         }
 
 # ============================================================
-# 3. INTERFAZ VISUAL PREMIUM
+# 3. INTERFAZ VISUAL
 # ============================================================
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -518,19 +438,18 @@ with st.sidebar:
     api_key_input = st.text_input(
         "API-Football Key (Opcional)", 
         type="password",
-        help="RapidAPI Key para datos reales. Sin ella se usa el motor predictivo."
+        help="RapidAPI Key para datos reales."
     )
 
     if not api_key_input:
-        st.info("💡 Modo: Motor Predictivo Inteligente")
+        st.info("💡 Modo: Motor Predictivo")
     else:
-        st.success("🔑 API Key activa")
+        st.success("🔑 API activa")
 
     st.markdown("---")
 
-    # Input de odds para análisis de valor
-    st.subheader("💰 Análisis de Valor")
-    st.caption("Ingresa odds del mercado para calcular EV")
+    st.subheader("💰 Odds del Mercado")
+    st.caption("Para calcular Valor Esperado (EV)")
 
     col_odds1, col_odds2 = st.columns(2)
     with col_odds1:
@@ -541,10 +460,9 @@ with st.sidebar:
         odds_btts = st.number_input("BTTS Sí", min_value=1.01, value=1.85, step=0.05, format="%.2f")
 
     st.markdown("---")
-    st.caption(f"🎯 Umbral seguro: ≥ {UMBRAL_SEGURO*100:.0f}%")
-    st.caption(f"📊 Umbral valor: ≥ {UMBRAL_VALOR*100:.0f}% edge")
+    st.caption(f"🎯 Seguro: ≥ {UMBRAL_SEGURO*100:.0f}%")
+    st.caption(f"📊 Valor: ≥ {UMBRAL_VALOR*100:.0f}% edge")
 
-# Layout principal
 col1, col2, col3 = st.columns([2, 2, 1])
 with col1:
     home_team = st.text_input("🏠 Equipo Local", value="Real Madrid")
@@ -553,29 +471,11 @@ with col2:
 with col3:
     match_date = st.date_input("📅 Fecha", datetime.date.today())
 
-predict_btn = st.button("🚀 Iniciar Análisis Predictivo Avanzado", use_container_width=True, type="primary")
+predict_btn = st.button("🚀 Iniciar Análisis Predictivo", use_container_width=True, type="primary")
 
 # ============================================================
-# 4. RENDERIZADO DE RESULTADOS
+# 4. RENDERIZADO
 # ============================================================
-def render_confidence_bar(prob, height="8px"):
-    color = "#34d399" if prob >= 0.70 else "#fbbf24" if prob >= 0.55 else "#f87171"
-    return f"""
-    <div style="height: {height}; border-radius: 4px; background: #1e293b; overflow: hidden;">
-        <div style="height: 100%; width: {prob*100:.1f}%; background: {color}; border-radius: 4px; transition: width 0.5s;"></div>
-    </div>
-    """
-
-def value_badge(ev):
-    if ev > 0.10:
-        return "<span class='value-positive'>🔥 VALOR ALTO</span>"
-    elif ev > 0.05:
-        return "<span class='value-positive'>✅ VALOR</span>"
-    elif ev > -0.05:
-        return "<span class='value-neutral'>➖ Neutro</span>"
-    else:
-        return "<span class='value-negative'>❌ Sin valor</span>"
-
 def pick_card(title, pick, prob, seguro, icon="🎯"):
     css_class = "pick-safe" if seguro else "pick-risk" if prob >= 0.55 else "pick-avoid"
     badge = "✅ SEGURO" if seguro else "⚠️ MODERADO" if prob >= 0.55 else "❌ RIESGO"
@@ -593,7 +493,7 @@ if predict_btn and home_team and away_team:
     if home_team.lower().strip() == away_team.lower().strip():
         st.error("❌ Los equipos no pueden ser el mismo")
     else:
-        with st.spinner(f"🔬 Analizando {home_team} vs {away_team} | Motor Dixon-Coles + Monte Carlo..."):
+        with st.spinner(f"🔬 Analizando {home_team} vs {away_team}..."):
 
             fetcher = APIFootballFetcher(api_key_input)
             h_id = fetcher.get_team_id(home_team)
@@ -603,14 +503,11 @@ if predict_btn and home_team and away_team:
             engine = PredictorEngine(stats)
             r = engine.predict()
 
-            # Banner de éxito
             source_color = "#34d399" if "API" in r["data_source"] else "#fbbf24"
             st.success(f"✅ Análisis completado | Fuente: {r['data_source']}")
 
-            # ============================================================
             # PICKS PRINCIPALES
-            # ============================================================
-            st.markdown("## 🏆 Picks Automáticos del Sistema")
+            st.markdown("## 🏆 Picks del Sistema")
 
             c1, c2, c3, c4 = st.columns(4)
             with c1:
@@ -624,9 +521,7 @@ if predict_btn and home_team and away_team:
 
             st.markdown("---")
 
-            # ============================================================
-            # ANÁLISIS DE VALOR (VALUE BETTING)
-            # ============================================================
+            # ANÁLISIS DE VALOR
             st.markdown("## 💰 Análisis de Valor vs Mercado")
 
             ev_1 = engine.calculate_ev(r['p_home'], odds_1)
@@ -653,19 +548,16 @@ if predict_btn and home_team and away_team:
             df_ev = pd.DataFrame(ev_data)
             st.dataframe(df_ev, use_container_width=True, hide_index=True)
 
-            # Alerta de valor
             best_ev = max([ev_1, ev_x, ev_2, ev_btts])
             if best_ev > UMBRAL_VALOR:
                 best_idx = [ev_1, ev_x, ev_2, ev_btts].index(best_ev)
                 best_labels = [f"1 ({home_team})", "X (Empate)", f"2 ({away_team})", "BTTS Sí"]
                 st.balloons()
-                st.success(f"🚀 **OPORTUNIDAD DETECTADA**: {best_labels[best_idx]} tiene un valor esperado de {best_ev:+.1%}. ¡Edge significativo sobre el mercado!")
+                st.success(f"🚀 **VALOR DETECTADO**: {best_labels[best_idx]} con EV de {best_ev:+.1%}")
 
             st.markdown("---")
 
-            # ============================================================
-            # GRÁFICO 1X2 + DISTRIBUCIÓN
-            # ============================================================
+            # GRÁFICOS
             col_chart1, col_chart2 = st.columns([3, 2])
 
             with col_chart1:
@@ -688,11 +580,9 @@ if predict_btn and home_team and away_team:
                     ))
 
                 fig_bar.update_layout(
-                    showlegend=False,
-                    height=300,
+                    showlegend=False, height=300,
                     margin=dict(t=30, b=20, l=20, r=20),
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                     font=dict(color='white'),
                     yaxis=dict(gridcolor='#334155', title='Probabilidad (%)')
                 )
@@ -711,10 +601,8 @@ if predict_btn and home_team and away_team:
                     color_discrete_sequence=['#667eea']
                 )
                 fig_dist.update_layout(
-                    height=300,
-                    margin=dict(t=30, b=20, l=20, r=20),
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)',
+                    height=300, margin=dict(t=30, b=20, l=20, r=20),
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                     font=dict(color='white'),
                     yaxis=dict(gridcolor='#334155')
                 )
@@ -722,10 +610,8 @@ if predict_btn and home_team and away_team:
 
             st.markdown("---")
 
-            # ============================================================
-            # HEATMAP DE RESULTADOS
-            # ============================================================
-            st.markdown("##### 🔥 Matriz de Resultados Probables (Dixon-Coles)")
+            # HEATMAP
+            st.markdown("##### 🔥 Matriz de Resultados Probables")
 
             heat_data = []
             for i in range(6):
@@ -754,34 +640,30 @@ if predict_btn and home_team and away_team:
             )
             fig_heat.update_layout(
                 height=400,
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                 font=dict(color='white')
             )
             st.plotly_chart(fig_heat, use_container_width=True)
 
             st.markdown("---")
 
-            # ============================================================
             # DETALLE POR MERCADO
-            # ============================================================
             col_goles, col_dc, col_corners, col_cards = st.columns(4)
 
             with col_goles:
                 st.subheader("⚽ Goles")
-                st.metric("Pick Principal", r['goal_pick'], f"{r['goal_prob']*100:.1f}%")
+                st.metric("Pick", r['goal_pick'], f"{r['goal_prob']*100:.1f}%")
                 st.caption(f"λ total: {r['lambda_total']:.2f}")
                 st.caption(f"{home_team}: {r['lambda_home']:.2f} | {away_team}: {r['lambda_away']:.2f}")
 
-                st.write("**Ambos Anotan:**")
-                st.progress(r['p_btts'], text=f"{r['p_btts']*100:.1f}%")
+                st.write(f"**Ambos Anotan: {r['p_btts']*100:.1f}%**")
 
                 with st.expander("Todas las líneas"):
                     for nombre, prob in r['goal_todas']:
                         marker = "⭐" if nombre == r['goal_pick'] else ""
                         st.write(f"{marker} {nombre}: **{prob*100:.1f}%**")
 
-                st.write("**Marcadores más probables:**")
+                st.write("**Marcadores probables:**")
                 for score, prob in r['scores']:
                     st.write(f"👉 **{score}** ({prob*100:.1f}%)")
 
@@ -791,7 +673,7 @@ if predict_btn and home_team and away_team:
 
             with col_dc:
                 st.subheader("🛡️ Doble Oport.")
-                st.metric("Pick Principal", r['dc_pick'], f"{r['dc_prob']*100:.1f}%")
+                st.metric("Pick", r['dc_pick'], f"{r['dc_prob']*100:.1f}%")
 
                 for nombre, prob in r['dc_opciones']:
                     if nombre == r['dc_pick']:
@@ -806,8 +688,8 @@ if predict_btn and home_team and away_team:
 
             with col_corners:
                 st.subheader("🚩 Córners")
-                st.metric("Pick Principal", r['corner_pick'], f"{r['corner_prob']*100:.1f}%")
-                st.caption(f"Total esperados: {r['expected_corners']:.1f}")
+                st.metric("Pick", r['corner_pick'], f"{r['corner_prob']*100:.1f}%")
+                st.caption(f"Total: {r['expected_corners']:.1f}")
 
                 with st.expander("Todas las líneas"):
                     for nombre, prob in r['corner_todas']:
@@ -816,8 +698,8 @@ if predict_btn and home_team and away_team:
 
             with col_cards:
                 st.subheader("🟨 Tarjetas")
-                st.metric("Pick Principal", r['card_pick'], f"{r['card_prob']*100:.1f}%")
-                st.caption(f"Total esperadas: {r['expected_cards']:.1f}")
+                st.metric("Pick", r['card_pick'], f"{r['card_prob']*100:.1f}%")
+                st.caption(f"Total: {r['expected_cards']:.1f}")
 
                 with st.expander("Todas las líneas"):
                     for nombre, prob in r['card_todas']:
@@ -826,12 +708,10 @@ if predict_btn and home_team and away_team:
 
             st.markdown("---")
 
-            # ============================================================
-            # EXPORTAR Y METADATOS
-            # ============================================================
+            # EXPORTAR
             col_exp1, col_exp2 = st.columns(2)
 
-            export_data = {
+            export_json = {
                 "partido": f"{home_team} vs {away_team}",
                 "fecha": str(match_date),
                 "fuente_datos": r['data_source'],
@@ -856,9 +736,10 @@ if predict_btn and home_team and away_team:
             }
 
             with col_exp1:
+                import json as json_lib
                 st.download_button(
                     "📥 Descargar JSON",
-                    data=pd.json_normalize(export_data).to_json(indent=2),
+                    data=json_lib.dumps(export_json, indent=2),
                     file_name=f"prediccion_{home_team}_{away_team}.json",
                     mime="application/json"
                 )
@@ -866,9 +747,9 @@ if predict_btn and home_team and away_team:
             with col_exp2:
                 csv_data = pd.DataFrame([
                     ['Resultado', 'Probabilidad', 'Pick'],
-                    [f'1 ({home_team})', f"{r["p_home"]*100:.1f}%", ''],
-                    ['X (Empate)', f"{r["p_draw"]*100:.1f}%", ''],
-                    [f'2 ({away_team})', f"{r["p_away"]*100:.1f}%", ''],
+                    [f'1 ({home_team})', f"{r['p_home']*100:.1f}%", ''],
+                    ['X (Empate)', f"{r['p_draw']*100:.1f}%", ''],
+                    [f'2 ({away_team})', f"{r['p_away']*100:.1f}%", ''],
                     ['Goles', f"{r['goal_prob']*100:.1f}%", r['goal_pick']],
                     ['Doble Oport.', f"{r['dc_prob']*100:.1f}%", r['dc_pick']],
                     ['Córners', f"{r['corner_prob']*100:.1f}%", r['corner_pick']],
@@ -881,13 +762,10 @@ if predict_btn and home_team and away_team:
                     mime="text/csv"
                 )
 
-            # Footer
             st.markdown("---")
             st.caption(
-                "⚠️ **Disclaimer**: Las probabilidades son estimaciones estadísticas usando modelo Dixon-Coles "
-                "y simulación Monte Carlo. Ningún resultado está garantizado. "
-                "El análisis de valor (EV) requiere odds reales del mercado para ser preciso. "
-                "Apuesta con responsabilidad."
+                "⚠️ **Disclaimer**: Probabilidades estimadas con modelo Dixon-Coles + Monte Carlo. "
+                "Ningún resultado garantizado. El EV requiere odds reales. Apuesta con responsabilidad."
             )
 
 elif predict_btn:
